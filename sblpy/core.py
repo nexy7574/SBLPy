@@ -13,6 +13,12 @@ import logging
 __version__ = "0.1.0"
 __verified__= False
 
+_VARS = {
+    "bot": None,
+    "function": None,
+    "cooldown": None
+}
+
 
 class BumpRequest(BaseModel):
     type: str  # REQUEST
@@ -114,6 +120,9 @@ class SBLP:
         self.cooldown = cooldown
         self.auth = auth_token
         self.slugs = slugs
+        _VARS["bot"] = bot
+        _VARS["cooldown"] = cooldown
+        _VARS["function"] = bump_function
 
     def _log(self, message, level: str = "info"):
         levels = {"debug": logging.debug, "info": logging.info, "warning": logging.warning, "error": logging.error,
@@ -137,41 +146,8 @@ class SBLP:
 
     @app.get("/")
     @app.get("/sblp")
-    async def test(self):
+    async def test(self=None):  # ffs fastapi
         pass
-
-    @app.post("/sblp/request")
-    async def incoming(self, req: fastapi.Request, body: BumpRequest):
-        auth = req.headers.get("Authorization", "")
-        if auth == "":  # self.auth:  # TODO: real authorization
-            return fastapi.responses.JSONResponse(None, 401)  # returns a 401 unauthenticated response
-
-        logging.warning(f"Presuming request w/ auth {auth} is legit")
-
-        body = MappedBumpRequest(body, self.bot)
-        if not isinstance(body.guild, discord.Guild):
-            return fastapi.responses.JSONResponse(dict(status=400, type="ERROR", ), 400)
-        self.bot.dispatch("sblp_bump", body.guild, body.member or body.user, body.channel, body)
-        try:
-            await self.function(body.guild, body.member or body.user, body.channel, body)
-        except:
-            traceback.print_exc()
-            return dict(
-                type="ERROR",
-                response=body.channel.id,
-                code="other",
-                nextBump=0,
-                message=f"Internal error while running bump function. Contact {(await self.bot.application_info()).owner}",
-                status=500,
-                sucess=False
-            )
-        else:
-            return dict(
-                type="FINISHED",
-                response=body.channel.id,
-                nextBump=self.cooldown,
-                message=f"{self.bot.user} Has successfully bumped."
-            )
 
     async def request(self, ctx: commands.Context=None, *, guild: discord.Guild = None,
                       channel: discord.TextChannel = None, user: discord.Member = None):
@@ -209,6 +185,42 @@ class SBLP:
             async with session.get("https://" + slug + "/request", daya=payload) as response:
                 self._log(f"Got status {response.status} on slug {slug}")
                 self.bot.dispatch("sblp_request_done", response)
+
+    @app.post("/sblp/request")
+    async def incoming(self, req: fastapi.Request, body: BumpRequest):
+        raise NotImplementedError
+        # auth = req.headers.get("Authorization", "")
+        # if auth == "":  # self.auth:  # TODO: real authorization
+        #     return fastapi.responses.JSONResponse(None, 401)  # returns a 401 unauthenticated response
+        #
+        # logging.warning(f"Presuming request w/ auth {auth} is legit")
+        #
+        # bot, function, cooldown = 0,0,0
+        #
+        # body = MappedBumpRequest(body, bot)
+        # if not isinstance(body.guild, discord.Guild):
+        #     return fastapi.responses.JSONResponse(dict(status=400, type="ERROR", ), 400)
+        # bot.dispatch("sblp_bump", body.guild, body.member or body.user, body.channel, body)
+        # try:
+        #     await function(body.guild, body.member or body.user, body.channel, body)
+        # except:
+        #     traceback.print_exc()
+        #     return dict(
+        #         type="ERROR",
+        #         response=body.channel.id,
+        #         code="other",
+        #         nextBump=0,
+        #         message=f"Internal error while running bump function. Contact {(await self.bot.application_info()).owner}",
+        #         status=500,
+        #         sucess=False
+        #     )
+        # else:
+        #     return dict(
+        #         type="FINISHED",
+        #         response=body.channel.id,
+        #         nextBump=cooldown,
+        #         message=f"{bot.user} Has successfully bumped."
+        #     )
 
 
 
