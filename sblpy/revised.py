@@ -2,6 +2,7 @@ __version__ = "0.0.1"
 __verified__= False
 
 import asyncio
+import traceback
 
 import discord
 import fastapi
@@ -15,9 +16,7 @@ from pydantic import BaseModel
 from . import errors
 
 _VARS = {
-    "bot": None,
-    "function": None,
-    "cooldown": None
+    "client": None
 }
 
 def set_vars(**kwargs):
@@ -38,8 +37,8 @@ def get_vars(*keys):
     :return:
     """
     ret = []
-    for key, value in _VARS.items():
-        ret.append(value)
+    for key in keys:
+        ret.append(_VARS.get(key.lower()))
     if len(ret) == 1:
         ret = ret[0]
     elif not ret:
@@ -83,13 +82,15 @@ class MappedBumpRequest:
 
 
 class Client:
-    def __init__(self, bot, bump_function: typing.Union[callable, str]):
+    def __init__(self, bot, bump_function: typing.Union[callable, str], *, bump_cooldown: int = 3600):
         self.ready = False
         self.server = None
         self.config = None
         self.task = None
         self.func = bump_function
         self.bot = bot
+        self.cooldown = bump_cooldown
+        set_vars(client=self)
 
     def init_server(self, host: str = "127.0.0.1", port: int = 1234, *, reload_on_file_edit: bool = False):
         """Initializes the internal server for use"""
@@ -155,6 +156,37 @@ class Client:
         body = MappedBumpRequest(body, self.bot)
         self.bot.dispatch("sblp_request_start", body)
         try:
-            await discord.utils.maybe_coroutine(await self._parse_function(), body=body, bot=self.bot)
+            res = await discord.utils.maybe_coroutine(await self._parse_function(), body=body, bot=self.bot)
         except Exception as e:
-            pass
+            traceback.print_exc()
+            return fastapi.responses.JSONResponse(
+                {
+                    "type": "ERROR",
+                    "code": "OTHER",
+                    "message": f"Internal Error: {e}"
+                },
+                500
+            )
+        else:
+            if isinstance(res, int):
+                bumped_to = res
+            else:
+                bumped_to = -1
+            return fastapi.responses.JSONResponse(
+                {
+                    "type": "FINISHED",
+                    "response": "0",
+                    "amount": bumped_to,
+                    "nextBump": self.cooldown
+                },
+                200
+            )
+
+@app.post("/sblp/request")
+async def sblp_request(req: fastapi.Request, body: BumpRequest):
+    client: Client = get_vars("client", "Filler")[0]
+    if client is None:
+        raise errors.StateException(False, True, message="Client doesn't even exist yet. How tf did you get here?")
+    else:
+        client: Client
+        await client.request(req, body)
