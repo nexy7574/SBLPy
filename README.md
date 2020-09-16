@@ -1,0 +1,57 @@
+# SBLPy
+Your favourite, and only, python wrapper for the "very popular" 
+[sblp](https://example.com).
+
+
+## Features:
+* Simple [setup](#Setup)
+* Fast and low-power HTTP server, that won't slow your bot down
+* Easy to use `request` functions, making starting SBLP requests easier
+* Automatic handling of inputted data
+* probably more
+
+## Setup
+This module doesn't need the bot to be ready when you initilise it.
+
+```python
+from discord.ext import commands
+from sblp import revised
+
+async def handler(bumpBody):
+    # For simplicity, we'll define the bump function here. DONT DO THIS!
+    async def bump(ctx, **kwargs):
+        ctx = ctx or kwargs.get("body")
+        ...  # do bumping stuff
+        return len(bumped_to)  # can return anything
+    return await bump(body=bumpBody)
+
+bot = commands.Bot(...)  # can be AutoSharded
+bot.sblp = revised.Client(
+    bot, 
+    handler,  # Note that this function doesn't get a context object.
+    bump_cooldown=3600  # how many seconds between each bump
+)
+```
+### Starting and Stopping the server
+Carrying on from the last example,
+```python
+bot.sblp.init_server()  # you can change the open port via port=1234
+bot.sblp.start()
+# close the server
+bot.sblp.stop()
+```
+
+### Functionless Clients
+since SBLPy also uses commands.Bot's `dispatch` system, you don't *technically* need to provide a function when creating Client().
+
+In client:
+```python
+body = MappedBumpRequest(body, self.bot)
+self.bot.dispatch("sblp_request_start", body)
+```
+So what you can do here, is modify your bump command function:
+```python
+@commands.command()
+async def bump(self, ctx=None, **kwargs):
+    ctx = ctx or kwargs.get("body")
+```

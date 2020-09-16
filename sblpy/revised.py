@@ -79,6 +79,14 @@ class MappedBumpRequest:
             self.member = self.guild.get_member(int(raw.user))
         else:
             self.member = None
+    
+    async def send(self, *args, **kwargs):
+        """Sends a message to source channel"""
+        if not isinstance(self.channel, discord.TextChannel):
+            raise TypeError("Expected value TextChannel for self.channel, got int")
+        if not self.channel.permissions_for(self.guild.me).send_messages:
+            raise commands.BotMissingPermissions("send_messages")
+        return await self.channel.send(*args, **kwargs)
 
 
 class Client:
