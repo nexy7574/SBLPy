@@ -15,11 +15,11 @@ This module doesn't need the bot to be ready when you initilise it.
 
 ```python
 from discord.ext import commands
-from sblp import revised
+from sblpy import revised
 
 async def handler(bumpBody):
     # For simplicity, we'll define the bump function here. DONT DO THIS!
-    async def bump(ctx, **kwargs):
+    async def bump(ctx=None, **kwargs):
         ctx = ctx or kwargs.get("body")
         ...  # do bumping stuff
         return len(bumped_to)  # can return anything
@@ -36,9 +36,8 @@ bot.sblp = revised.Client(
 Carrying on from the last example,
 ```python
 bot.sblp.init_server()  # you can change the open port via port=1234
-bot.sblp.start()
-# close the server
-bot.sblp.stop()
+bot.sblp.start_server() # close the server
+bot.sblp.stop_server()
 ```
 
 ### Functionless Clients
@@ -48,10 +47,4 @@ In client:
 ```python
 body = MappedBumpRequest(body, self.bot)
 self.bot.dispatch("sblp_request_start", body)
-```
-So what you can do here, is modify your bump command function:
-```python
-@commands.command()
-async def bump(self, ctx=None, **kwargs):
-    ctx = ctx or kwargs.get("body")
 ```
