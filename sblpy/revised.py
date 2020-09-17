@@ -132,7 +132,8 @@ class Client:
                 True,
                 message=f"Server is not initialized!"
             )
-        self.task = asyncio.create_task(self.server.serve())
+        self.task = asyncio.get_event_loop().create_task(self.server.serve())
+        # self.task = asyncio.create_task(self.server.serve())
         return True
 
     def stop_server(self):
