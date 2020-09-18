@@ -2,6 +2,7 @@ __version__ = "0.0.1"
 __verified__= False
 
 import asyncio
+import logging
 import traceback
 
 import discord
@@ -11,6 +12,7 @@ import uvicorn
 import os
 import json
 
+from discord.ext import commands
 from pydantic import BaseModel
 
 from . import errors
@@ -85,12 +87,13 @@ class MappedBumpRequest:
         if not isinstance(self.channel, discord.TextChannel):
             raise TypeError("Expected value TextChannel for self.channel, got int")
         if not self.channel.permissions_for(self.guild.me).send_messages:
-            raise commands.BotMissingPermissions("send_messages")
+            raise commands.BotMissingPermissions("send_messages")  # 0.9.2  - fixed missing import
         return await self.channel.send(*args, **kwargs)
 
 
 class Client:
-    def __init__(self, bot, bump_function: typing.Union[callable, str], *, bump_cooldown: int = 3600):
+    def __init__(self, bot, bump_function: typing.Union[callable, str], *, bump_cooldown: int = 3600,
+                 require_authentication: bool = True, auth_config_path: str = None):
         self.ready = False
         self.server = None
         self.config = None
@@ -99,6 +102,12 @@ class Client:
         self.bot = bot
         self.cooldown = bump_cooldown
         set_vars(client=self)
+        self.auth = None
+        self.require_auth = require_authentication
+        self.auth_path = auth_config_path
+        if not auth_config_path and require_authentication:
+            logging.warning("Auth config for SBLPY has been enabled, yet no auth config file was provided.\n"
+                            "Please ensure you load it later down the line with client.load_config.")
 
     def init_server(self, host: str = "127.0.0.1", port: int = 1234, *, reload_on_file_edit: bool = False):
         """Initializes the internal server for use"""
@@ -132,6 +141,10 @@ class Client:
                 True,
                 message=f"Server is not initialized!"
             )
+        if not self.auth and self.require_auth:
+            logging.warning("SBLPy has been told to require authentication when receiving requests, but no authentication"
+                            " configuration has been set nor loaded. Please see Client.load_config, or Client."
+                            "add_auth(url,auth_password).")
         self.task = asyncio.get_event_loop().create_task(self.server.serve())
         # self.task = asyncio.create_task(self.server.serve())
         return True
@@ -162,11 +175,49 @@ class Client:
 
     async def request(self, req: fastapi.Request, body: BumpRequest):
         """The internal function. DO NOT CALL THIS!"""
+        if self.require_auth:  # 0.9.2: authentication added
+            if not self.auth:
+                logging.critical("Require authentication is enabled but no authentication exists. Forced to reject incoming"
+                                 " SBLP request.")
+                self.bot.dispatch("sblp_request_rejected", id=req.client.host, reason="Auth error (see logs/console)")
+                return fastapi.responses.JSONResponse(
+                    {
+                        "status": 501,
+                        "message": "Authentication is enabled but has not been loaded. unable to proceed with request.",
+                        "success": False
+                    },
+                    501
+                )
+            elif not req.headers.get("Authorization"):
+                self.bot.dispatch("sblp_request_rejected", id=req.client.host, reason="Invalid Auth Header - not provided")
+                return fastapi.responses.JSONResponse(
+                    {
+                        "status": 401,
+                        "message": "Please provide an authentication header",
+                        "success": False
+                    },
+                    401
+                )
+            else:
+                for key, value in self.auth.keys():
+                    if value == req.headers["Authorization"]:
+                        break
+                else:
+                    self.bot.dispatch("sblp_request_rejected", id=req.client.host, reason="Invalid Auth Token")
+                    return fastapi.responses.JSONResponse(
+                        {
+                            "status": 401,
+                            "message": "Please provide a valid authentication header",
+                            "success": False
+                        },
+                        401
+                    )
         body = MappedBumpRequest(body, self.bot)
         self.bot.dispatch("sblp_request_start", body)
         try:
             res = await discord.utils.maybe_coroutine(await self._parse_function(), body=body, bot=self.bot)
         except Exception as e:
+            self.bot.dispatch("sblp_request_failed", body=body, error=e)
             traceback.print_exc()
             return fastapi.responses.JSONResponse(
                 {
@@ -191,11 +242,71 @@ class Client:
                 200
             )
 
+    def load_config(self, path: str = None):
+        """Loads the configuration file that stores authentication information."""
+        path = path or self.auth_path
+        if not path:
+            raise TypeError("No authentication config file path was provided.")
+        try:
+            with open(path) as rfile:
+                data = json.load(rfile)
+            self.auth_path = path
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Configuration file {path} doesn't exist.") from e
+        except json.JSONDecodeError as e:
+            raise errors.JSONLoadError(path) from e
+        else:
+            self.auth = data
+            return data
+
+    def add_auth(self, url: str, token: str):
+        """
+        Adds an authentication pair to the configuration.
+
+        :param url: the SBLP slug that this token belongs to
+        :param token: the authentication token for a specific bot
+        :return:
+        """
+        if not self.auth:
+            self.auth = {}
+        if not self.auth_path:
+            logging.warning("add_auth called, however no configuration file to save to. This will need to be called every"
+                            " time you plan to create this class.")
+        else:
+            with open(self.auth_path, "w+") as wfile:
+                json.dump(self.auth, wfile, ensure_ascii=True)
+        self.auth[url] = token
+        logging.debug(f"Added token {token} to auth config, with slug {url}")
+        return self.auth
+
 @app.post("/sblp/request")
 async def sblp_request(req: fastapi.Request, body: BumpRequest):
-    client: Client = get_vars("client", "Filler")[0]
+    # 0.9.2 - Added actual handling
+    logging.debug(f"Received SBLP request from {req.client.host}")
+    client: Client = get_vars("client", "")[0]   # FIXME: linter is telling me to kill myself because this is apparently always None.
     if client is None:
         raise errors.StateException(False, True, message="Client doesn't even exist yet. How tf did you get here?")
     else:
-        client: Client
-        await client.request(req, body)
+        logging.debug(f"Calling client.request on {id(client)} for {req.client.host}")
+        if (t:=req.headers.get("maxwait")) and t.isdigit():
+            task = asyncio.create_task(client.request(req, body))
+            try:
+                result = await asyncio.wait_for(task, timeout=float(t))
+            except asyncio.TimeoutError:
+                task.cancel(f"Timeout of {t} requested by the client was exceeded.")
+                return fastapi.responses.PlainTextResponse(f"Timeout of {t} seconds was exceeded internally, "
+                                                           f"and as such the task has been cancelled.", 504)
+        else:
+            result = await client.request(req, body)
+        # updated in 0.9.2: I forgot to actually return the object.
+        if req.headers.get("Accept", "application/json") == "application/json":
+            if not isinstance(result, fastapi.responses.JSONResponse):
+                return fastapi.responses.JSONResponse(
+                    {
+                        "status": 417,
+                        "message": "Response type could not be converted to application/json",
+                        "success": False
+                    },
+                    417
+                )
+        return result
