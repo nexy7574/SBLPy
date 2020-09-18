@@ -199,7 +199,7 @@ class Client:
                     401
                 )
             else:
-                for key, value in self.auth.keys():
+                for key, value in self.auth.items():
                     if value == req.headers["Authorization"]:
                         break
                 else:
