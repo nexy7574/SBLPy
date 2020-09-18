@@ -14,3 +14,14 @@ class StateException(Exception):
 class BotNotReady(StateException):
     def __init__(self):
         super().__init__(False, True, message="Bot client is not logged in yet.")
+
+class FileException(Exception):
+    def __init__(self, path: str, message: str = None):
+        self.message = message or f"Error reading file '{path}'"
+        self.path = path
+
+    def __repr__(self):
+        return f"FileException(path=\"{self.path}\" message=\"{self.message}\")"
+
+
+class JSONLoadError(FileException): pass
