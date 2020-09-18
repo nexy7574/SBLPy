@@ -48,3 +48,20 @@ In client:
 body = MappedBumpRequest(body, self.bot)
 self.bot.dispatch("sblp_request_start", body)
 ```
+
+elsewhere:
+```python
+@commands.Cog.listener()
+async def on_sblp_request_start(body):
+    ...
+```
+
+![requestmp4](.assets/request.mp4)
+
+------------------------------
+## Changelog
+0.9.2:
+
+* Changelog started
+* Added basic authentication support
+* bugfixes
