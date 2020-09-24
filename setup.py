@@ -8,7 +8,7 @@ except:
 
 setup(
     name='SBLPy',
-    version='0.9.2',
+    version='0.9.3',
     packages=['sblpy'],
     url='https://github.com/EEKIM10/sblpy',
     license='MIT',
