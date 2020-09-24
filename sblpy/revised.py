@@ -3,6 +3,7 @@ __verified__= False
 
 import asyncio
 import logging
+import time
 import traceback
 
 import discord
@@ -18,7 +19,8 @@ from pydantic import BaseModel
 from . import errors
 
 _VARS = {
-    "client": None
+    "client": None,
+    "ignore_intents": False
 }
 
 def set_vars(**kwargs):
@@ -66,13 +68,23 @@ class MappedBumpRequest:
     - channel: Union[discord.TextChannel, int]
     - member: Union[discord.Member, None]
     - user: Union[discord.User, int]"""
-    __slots__ = ("type", "guild", "channel", "member", "user")
+    __slots__ = ("type", "guild", "channel", "member", "user", "_intentblocked")
 
-    def __init__(self, raw: BumpRequest, bot = None):
+    def __init__(self, raw: BumpRequest, bot: commands.Bot = None):
+        # 0.9.3 - Check intents for upcoming discord.py
+        if discord.version_info.minor >= 5 and not _VARS["ignore_intents"]:
+            intents = bot._connection._intents
+            if not intents.members:
+                logging.warning("Members intent is required to get the author (member) instance for bump requests.\n"
+                                "If you `sblpy.setvar('ignore_intents', True)`, you can suppress this warning.")
+                self._intentblocked = True
+        else:
+            self._intentblocked = False
         self.type = "REQUEST"
         self.guild = int(raw.guild)
         self.channel = int(raw.channel)
         self.user = int(raw.user)
+
         if bot:
             self.guild = bot.get_guild(self.guild) or self.guild  # or for fallbacks.
             self.channel = bot.get_channel(self.channel) or self.channel
@@ -81,6 +93,24 @@ class MappedBumpRequest:
             self.member = self.guild.get_member(int(raw.user))
         else:
             self.member = None
+            
+    @property
+    def valid(self):
+        """Returns True if this is a valid request.
+
+        A valid request is when the channel, user and guild are all resolved.
+
+        NOTE::
+            if the member is not resolved, but was not blocked by intents(*), this will return false.
+            if the member couldn't be resolved (because of intents(*)), this will still be valid (assuming other)"""
+        if self._intentblocked:
+            return self.channel and self.user and self.guild
+        else:
+            return self.channel and self.user and self.guild and self.member
+
+    @valid.setter
+    def valid(self, value):
+        raise AttributeError("self.valid can not be set")
     
     async def send(self, *args, **kwargs):
         """Sends a message to source channel"""
@@ -90,6 +120,9 @@ class MappedBumpRequest:
             raise commands.BotMissingPermissions("send_messages")  # 0.9.2  - fixed missing import
         return await self.channel.send(*args, **kwargs)
 
+    def __getattr__(self, name):
+        return getattr(self.guild, name.lower(), None) or getattr(self.channel, )
+
 
 class Client:
     def __init__(self, bot, bump_function: typing.Union[callable, str], *, bump_cooldown: int = 3600,
@@ -98,6 +131,7 @@ class Client:
         self.server = None
         self.config = None
         self.task = None
+        self.tasks = []
         self.func = bump_function
         self.bot = bot
         self.cooldown = bump_cooldown
@@ -106,8 +140,26 @@ class Client:
         self.require_auth = require_authentication
         self.auth_path = auth_config_path
         if not auth_config_path and require_authentication:
-            logging.warning("Auth config for SBLPY has been enabled, yet no auth config file was provided.\n"
+            logging.critical("Auth config for SBLPY has been enabled, yet no auth config file was provided.\n"
                             "Please ensure you load it later down the line with client.load_config.")
+        if self.auth_path:
+            self.load_config(self.auth_path)  # 0.9.3 - fixed config not autoloading
+
+        self.on_cooldown = {}
+
+    async def _handle_cooldown(self, channel):
+        self.on_cooldown[channel] = self.cooldown
+        await asyncio.sleep(self.cooldown)
+        try:
+            del self.on_cooldown[channel]
+        except KeyError:
+            pass
+
+    def __del__(self):  # 0.9.3 - Stop port overflow by not actually closing
+        if self.tasks or self.task:
+            logging.warning("Don't forget to close the server before destroying a client instance.")
+            [x.cancel() for x in self.tasks]
+            self.task.cancel()
 
     def init_server(self, host: str = "127.0.0.1", port: int = 1234, *, reload_on_file_edit: bool = False):
         """Initializes the internal server for use"""
@@ -213,6 +265,16 @@ class Client:
                         401
                     )
         body = MappedBumpRequest(body, self.bot)
+        if body.channel in self.on_cooldown.keys():
+            return fastapi.responses.JSONResponse(
+                {
+                    "status": 429,
+                    "message": "On cooldown!",
+                    "success": False,
+                    "code": "COOLDOWN",
+                    "nextBump": self.on_cooldown[body.channel]
+                }
+            )
         self.bot.dispatch("sblp_request_start", body)
         try:
             res = await discord.utils.maybe_coroutine(await self._parse_function(), body=body, bot=self.bot)
@@ -232,18 +294,27 @@ class Client:
                 bumped_to = res
             else:
                 bumped_to = -1
+            self.bot.dispatch("sblp_request_finished", body)
             return fastapi.responses.JSONResponse(
                 {
                     "type": "FINISHED",
                     "response": "0",
                     "amount": bumped_to,
-                    "nextBump": self.cooldown
+                    "nextBump": self.cooldown  # 0.9.3 - Fixed false return Type. || unfixed
                 },
                 200
             )
 
     def load_config(self, path: str = None):
-        """Loads the configuration file that stores authentication information."""
+        """Loads the configuration file that stores authentication information.
+
+        the config file is a dictionary of {hostname: token} pairs.
+        e.g:
+        JSON::
+        {
+            "foo": "bar",
+            "barn": "Boop"
+        }"""
         path = path or self.auth_path
         if not path:
             raise TypeError("No authentication config file path was provided.")
@@ -288,7 +359,7 @@ async def sblp_request(req: fastapi.Request, body: BumpRequest):
         raise errors.StateException(False, True, message="Client doesn't even exist yet. How tf did you get here?")
     else:
         logging.debug(f"Calling client.request on {id(client)} for {req.client.host}")
-        if (t:=req.headers.get("maxwait")) and t.isdigit():
+        if (t:=req.headers.get("maxwait"), "60") and t.isdigit():  # 0.9.3 - set default to 60 seconds
             task = asyncio.create_task(client.request(req, body))
             try:
                 result = await asyncio.wait_for(task, timeout=float(t))
