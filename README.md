@@ -60,6 +60,15 @@ async def on_sblp_request_start(body):
 
 ------------------------------
 ## Changelog
+0.9.3:
+* In-built cooldown handling
+* Fixed some invalid return codes
+* Fixed authentication not auto-loading
+* ~~made the module complain~~ cancel all the running tasks if you destroy the instance
+* bugfixes
+* future-proofing for intents
+* Added `valid` property to `MappedBumpRequest` so you can verify if a request is valid or not
+
 0.9.2:
 
 * Changelog started
