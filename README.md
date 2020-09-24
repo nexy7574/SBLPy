@@ -56,7 +56,7 @@ async def on_sblp_request_start(body):
     ...
 ```
 
-![requestmp4](.assets/request.mp4)
+![request.mp4](https://github.com/EEKIM10/SBLPy/blob/master/.assets/request.mp4)
 
 ------------------------------
 ## Changelog
