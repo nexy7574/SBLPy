@@ -1,1 +1,1 @@
-from .core import SBLP, MappedBumpRequest
+from .revised import Client, MappedBumpRequest
