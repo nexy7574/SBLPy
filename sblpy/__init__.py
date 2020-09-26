@@ -1,1 +1,1 @@
-from .revised import Client, MappedBumpRequest
+from .revised import Client, MappedBumpRequest, ErrorCode, BumpFinishedResponse, BumpErrorResponse, new_request, __version__

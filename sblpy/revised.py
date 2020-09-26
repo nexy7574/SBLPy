@@ -1,11 +1,13 @@
-__version__ = "0.0.1"
+__version__ = "1.0.0"
 __verified__= False
 
 import asyncio
 import logging
 import time
 import traceback
+from datetime import timedelta, datetime
 
+import aiohttp
 import discord
 import fastapi
 import typing
@@ -49,6 +51,13 @@ def get_vars(*keys):
         return None
     return ret
 
+def get_var(key):
+    """get_vars, but only ever returns one."""
+    var = get_vars(key)
+    if isinstance(var, list):
+        var = var[0]
+    return var
+
 app = fastapi.FastAPI()
 
 class BumpRequest(BaseModel):
@@ -56,6 +65,21 @@ class BumpRequest(BaseModel):
     guild: str
     channel: str
     user: str
+
+
+class ErrorCode:
+    # MISSING_SETUP = 0
+    # COOLDOWN = 1
+    # AUTOBUMP = 2
+    # NOT_FOUND = 3
+    # OTHER = 4
+    def __init__(self, code: str):
+        code = code.upper()
+        self.MISSING_SETUP = code == "MISSING_SETUP"
+        self.COOLDOWN = code == "COOLDOWN"
+        self.AUTOBUMP = code == "AUTOBUMP"
+        self.NOT_FOUND = code == "NOT_FOUND"
+        self.OTHER = code == "OTHER"
 
 
 class MappedBumpRequest:
@@ -120,13 +144,38 @@ class MappedBumpRequest:
             raise commands.BotMissingPermissions("send_messages")  # 0.9.2  - fixed missing import
         return await self.channel.send(*args, **kwargs)
 
-    def __getattr__(self, name):
-        return getattr(self.guild, name.lower(), None) or getattr(self.channel, )
+    def __getattr__(self, name):  # 1.0.0 - Enable dynamic attributes
+        # NOTE: this may be removed in the future if the behavior becomes too ambiguous or messy.
+        name = name.lower()
+        return getattr(self.guild,name,None) or getattr(self.channel,name,None) or \
+               getattr(self.member if self.member else self.user,name)
+
+
+class BumpFinishedResponse:
+    """This is what is returned when a REQUEST finishes, successfully."""
+    __slots__ = ("response", "nextBump", "message", "amount")
+    def __init__(self, *, response: str, nextBump: int, message: str = None, amount: int = None):
+        self.response = int(response)
+        self.nextBump = datetime.utcnow() + timedelta(seconds=nextBump//1000)
+        self.message = message or ""
+        self.amount = amount or -1
+
+
+class BumpErrorResponse:
+    """This is returned when a REQUEST fails (server-side)."""
+    __slots__ = ("response", "code", "nextBump", "message")
+    def __init__(self, *, response: str, code: str, nextBump: int = None, message: str):
+        self.response = int(response)
+        self.code = ErrorCode(code)
+        self.nextBump = (datetime.utcnow() + timedelta(seconds=nextBump//1000)) if nextBump else datetime.utcnow()
+        self.message = message or "No Error Message Specified."
 
 
 class Client:
     def __init__(self, bot, bump_function: typing.Union[callable, str], *, bump_cooldown: int = 3600,
                  require_authentication: bool = True, auth_config_path: str = None):
+        if os.path.exists("./.sblpy/auth_config.json") and not auth_config_path:
+            auth_config_path = "./.sblpy/auth_config.json"  # 1.0.0 - Automated detection of config files
         self.ready = False
         self.server = None
         self.config = None
@@ -139,6 +188,7 @@ class Client:
         self.auth = None
         self.require_auth = require_authentication
         self.auth_path = auth_config_path
+
         if not auth_config_path and require_authentication:
             logging.critical("Auth config for SBLPY has been enabled, yet no auth config file was provided.\n"
                             "Please ensure you load it later down the line with client.load_config.")
@@ -354,12 +404,12 @@ class Client:
 async def sblp_request(req: fastapi.Request, body: BumpRequest):
     # 0.9.2 - Added actual handling
     logging.debug(f"Received SBLP request from {req.client.host}")
-    client: Client = get_vars("client", "")[0]   # FIXME: linter is telling me to kill myself because this is apparently always None.
+    client: Client = get_var("client")
     if client is None:
         raise errors.StateException(False, True, message="Client doesn't even exist yet. How tf did you get here?")
     else:
         logging.debug(f"Calling client.request on {id(client)} for {req.client.host}")
-        if (t:=req.headers.get("maxwait"), "60") and t.isdigit():  # 0.9.3 - set default to 60 seconds
+        if (t:=str(req.headers.get("maxwait"), "60")) and t.isdigit():  # 0.9.3 - set default to 60 seconds
             task = asyncio.create_task(client.request(req, body))
             try:
                 result = await asyncio.wait_for(task, timeout=float(t))
@@ -381,3 +431,44 @@ async def sblp_request(req: fastapi.Request, body: BumpRequest):
                     417
                 )
         return result
+
+async def new_request(ctx,*urls: str,token:str):
+    """
+    Makes a request to all the other bump bots on SBLP.
+
+
+    :param urls: A list of URLs to request.
+    :param ctx: the context
+
+    This is an async iterator. This means you have to `async for x in new_request(...)`.
+    """
+    # 1.0.0 - Request function
+    bot = get_var("client").bot
+    payload = {
+        "type": "REQUEST",
+        "guild": str(ctx.guild.id),
+        "channel": str(ctx.channel.id),
+        "user": str(ctx.author.id)
+    }
+    headers = {
+        "User-Agent": f"SBLPy/{__version__} discord.py/{discord.__version__} {bot.user.name}",
+        "maxwait": get_var("timeout") or "60",
+        "Accept": "application/json",
+        "Authorization": token
+    }
+    session = aiohttp.ClientSession()
+    for url in urls:
+        if not url.startswith("http"):
+            url = "http://" + url
+        logging.debug(f"sending POST request to {url} with data {payload}")
+        async with session.post(url, daya=payload, headers=headers) as resp:
+            try:
+                data = await resp.json()
+            except Exception as e:
+                logging.error(f"Error while decoding response from {url}: {e}. Status code: {resp.status}")
+                yield False  # instead of re-raising the error
+            else:
+                if data["type"].upper() == "FINISHED":
+                    yield BumpFinishedResponse(**data)
+                else:
+                    yield BumpErrorResponse(**data)

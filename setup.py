@@ -1,4 +1,5 @@
 from setuptools import setup
+from sblpy import __version__
 
 try:
     with open("./README.md") as rfile:
@@ -8,7 +9,7 @@ except:
 
 setup(
     name='SBLPy',
-    version='0.9.3',
+    version=__version__,
     packages=['sblpy'],
     url='https://github.com/EEKIM10/sblpy',
     license='MIT',
