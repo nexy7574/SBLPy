@@ -9,6 +9,7 @@ import uvicorn
 from discord.ext import commands
 from pydantic import BaseModel
 import logging
+from discord.utils import deprecated
 
 __version__ = "0.1.0"
 __verified__= False
@@ -80,6 +81,7 @@ class SBLP:
         bot = commands.[AutoSharded]Bot(...)
         bot.loop.create_task(sblp.SBLP(bot, <bump_function>, <bump_cooldown_in_ms>, auth_token="...").start())"""
 
+    @deprecated
     def __init__(
             self,
             bot,
@@ -124,12 +126,14 @@ class SBLP:
         _VARS["cooldown"] = cooldown
         _VARS["function"] = bump_function
 
+    @deprecated
     def _log(self, message, level: str = "info"):
         levels = {"debug": logging.debug, "info": logging.info, "warning": logging.warning, "error": logging.error,
                   "critical": logging.critical}
         if self.debug:
             levels.get(level, logging.info)(f"[SBLP HTTP] {message.capitalize()}")
 
+    @deprecated
     async def start(self):
         self._log("server starting up...")
         try:
@@ -139,11 +143,13 @@ class SBLP:
         else:
             self._log("Server successfully started.")
 
+    @deprecated
     async def kill(self):
         self._log("Stopping server...")
         await self.server.shutdown()
         self._log("Stopped server.")
 
+    @deprecated
     @app.get("/")
     @app.get("/sblp")
     async def test(self=None):  # ffs fastapi
@@ -186,6 +192,7 @@ class SBLP:
                 self._log(f"Got status {response.status} on slug {slug}")
                 self.bot.dispatch("sblp_request_done", response)
 
+    @deprecated
     @app.post("/sblp/request")
     async def incoming(self, req: fastapi.Request, body: BumpRequest):
         raise NotImplementedError
