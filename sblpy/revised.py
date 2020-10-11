@@ -1,9 +1,8 @@
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __verified__= False
 
 import asyncio
 import logging
-import time
 import traceback
 from datetime import timedelta, datetime
 
@@ -61,7 +60,7 @@ def get_var(key):
 app = fastapi.FastAPI()
 
 class BumpRequest(BaseModel):
-    type: str  # REQUEST
+    type: typing.Optional[str] = "REQUEST"  # REQUEST
     guild: str
     channel: str
     user: str
@@ -97,7 +96,7 @@ class MappedBumpRequest:
     def __init__(self, raw: BumpRequest, bot: commands.Bot = None):
         # 0.9.3 - Check intents for upcoming discord.py
         if discord.version_info.minor >= 5 and not _VARS["ignore_intents"]:
-            intents = bot._connection._intents
+            intents = bot.intents  # 1.0.0 - Change to the public interface
             if not intents.members:
                 logging.warning("Members intent is required to get the author (member) instance for bump requests.\n"
                                 "If you `sblpy.setvar('ignore_intents', True)`, you can suppress this warning.")
@@ -199,7 +198,9 @@ class Client:
 
     async def _handle_cooldown(self, channel):
         self.on_cooldown[channel] = self.cooldown
-        await asyncio.sleep(self.cooldown)
+        while self.on_cooldown.get(channel,0):
+            await asyncio.sleep(1)
+            self.on_cooldown[channel] -= 1
         try:
             del self.on_cooldown[channel]
         except KeyError:
@@ -225,9 +226,6 @@ class Client:
         self.server = uvicorn.Server(self.config)
         self.ready = True
         return True
-
-    def __verify_config_file(self):
-        pass
 
     def start_server(self):
         """Starts the internal server, allowing incoming requests."""
@@ -277,11 +275,21 @@ class Client:
 
     async def request(self, req: fastapi.Request, body: BumpRequest):
         """The internal function. DO NOT CALL THIS!"""
+        if not self.bot.is_ready():  # 1.0.1 - Added waiting
+            return fastapi.responses.JSONResponse(
+                {
+                    "status": 503,
+                    "message": "Bot is not ready yet. Try again in a few seconds.",
+                    "success": False
+                },
+                503
+            )
         if self.require_auth:  # 0.9.2: authentication added
+            # 1.0.0 - Fix `id` typo
             if not self.auth:
                 logging.critical("Require authentication is enabled but no authentication exists. Forced to reject incoming"
                                  " SBLP request.")
-                self.bot.dispatch("sblp_request_rejected", id=req.client.host, reason="Auth error (see logs/console)")
+                self.bot.dispatch("sblp_request_rejected", ip=req.client.host, reason="Auth error (see logs/console)")
                 return fastapi.responses.JSONResponse(
                     {
                         "status": 501,
@@ -291,7 +299,7 @@ class Client:
                     501
                 )
             elif not req.headers.get("Authorization"):
-                self.bot.dispatch("sblp_request_rejected", id=req.client.host, reason="Invalid Auth Header - not provided")
+                self.bot.dispatch("sblp_request_rejected", ip=req.client.host, reason="Invalid Auth Header - not provided")
                 return fastapi.responses.JSONResponse(
                     {
                         "status": 401,
@@ -301,11 +309,14 @@ class Client:
                     401
                 )
             else:
+                token = req.headers["Authorization"]
+                if token.startswith("Bearer "):
+                    token = token[7:]
                 for key, value in self.auth.items():
-                    if value == req.headers["Authorization"]:
+                    if value == token:
                         break
                 else:
-                    self.bot.dispatch("sblp_request_rejected", id=req.client.host, reason="Invalid Auth Token")
+                    self.bot.dispatch("sblp_request_rejected", ip=req.client.host, reason="Invalid Auth Token")
                     return fastapi.responses.JSONResponse(
                         {
                             "status": 401,
@@ -325,6 +336,8 @@ class Client:
                     "nextBump": self.on_cooldown[body.channel]
                 }
             )
+        else:
+            self.bot.loop.create_task(self._handle_cooldown(body.channel))
         self.bot.dispatch("sblp_request_start", body)
         try:
             res = await discord.utils.maybe_coroutine(await self._parse_function(), body=body, bot=self.bot)
@@ -409,7 +422,7 @@ async def sblp_request(req: fastapi.Request, body: BumpRequest):
         raise errors.StateException(False, True, message="Client doesn't even exist yet. How tf did you get here?")
     else:
         logging.debug(f"Calling client.request on {id(client)} for {req.client.host}")
-        if (t:=str(req.headers.get("maxwait"), "60")) and t.isdigit():  # 0.9.3 - set default to 60 seconds
+        if (t:=str(req.headers.get("maxwait","60"))) and t.isdigit():  # 0.9.3 - set default to 60 seconds
             task = asyncio.create_task(client.request(req, body))
             try:
                 result = await asyncio.wait_for(task, timeout=float(t))
@@ -432,11 +445,25 @@ async def sblp_request(req: fastapi.Request, body: BumpRequest):
                 )
         return result
 
+async def _send(session,url,payload,headers):
+    async with session.post(url, daya=payload, headers=headers) as resp:
+        try:
+            data = await resp.json()
+        except Exception as e:
+            logging.error(f"Error while decoding response from {url}: {e}. Status code: {resp.status}")
+            return False  # instead of re-raising the error
+        else:
+            if data["type"].upper() == "FINISHED":
+                return BumpFinishedResponse(**data)
+            else:
+                return BumpErrorResponse(**data)
+
 async def new_request(ctx,*urls: str,token:str):
     """
     Makes a request to all the other bump bots on SBLP.
 
 
+    :param token: your bot's SBLP token
     :param urls: A list of URLs to request.
     :param ctx: the context
 
@@ -454,21 +481,13 @@ async def new_request(ctx,*urls: str,token:str):
         "User-Agent": f"SBLPy/{__version__} discord.py/{discord.__version__} {bot.user.name}",
         "maxwait": get_var("timeout") or "60",
         "Accept": "application/json",
-        "Authorization": token
+        "Authorization": token,
+        "Content-Type": "application/json",
+        # "Content-Length": len(payload)
     }
     session = aiohttp.ClientSession()
     for url in urls:
         if not url.startswith("http"):
             url = "http://" + url
         logging.debug(f"sending POST request to {url} with data {payload}")
-        async with session.post(url, daya=payload, headers=headers) as resp:
-            try:
-                data = await resp.json()
-            except Exception as e:
-                logging.error(f"Error while decoding response from {url}: {e}. Status code: {resp.status}")
-                yield False  # instead of re-raising the error
-            else:
-                if data["type"].upper() == "FINISHED":
-                    yield BumpFinishedResponse(**data)
-                else:
-                    yield BumpErrorResponse(**data)
+        yield await asyncio.wait_for(_send(session,url,payload,headers), float(headers["maxwait"]))

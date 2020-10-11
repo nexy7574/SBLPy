@@ -108,7 +108,7 @@ class SBLP:
             bump_function can be an alias that calls your main function, or just handles it differently.
             remember, all the bump function gets sent is the guild, member, channel and the MappedBumpRequest body.
         """
-        if not __verified__:logging.warning("You are using an un-tested raw version of SBLPy. Production use is not advised.")
+        if not __verified__: logging.warning("You are using an un-tested raw version of SBLPy. Production use is not advised.")
         if not slugs:
             slugs = _DEFAULT
         self.bot = bot
@@ -139,6 +139,7 @@ class SBLP:
         try:
             await self.server.serve()
         except Exception as e:
+            self._log(f"Failed to start server: {e}", "error")
             print(f"Error starting HTTP server: {e}", file=sys.stderr)
         else:
             self._log("Server successfully started.")
